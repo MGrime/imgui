@@ -71,7 +71,7 @@ struct ImGui_ImplVulkanH_WindowRenderBuffers
 {
     uint32_t            Index;
     uint32_t            Count;
-    ImGui_ImplVulkanH_FrameRenderBuffers*   FrameRenderBuffers;
+    ImGui_ImplVulkanH_FrameRenderBuffers* FrameRenderBuffers;
 };
 
 // For multi-viewport support:
@@ -93,7 +93,6 @@ static VkDeviceSize             g_BufferMemoryAlignment = 256;
 static VkPipelineCreateFlags    g_PipelineCreateFlags = 0x00;
 static VkDescriptorSetLayout    g_DescriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout         g_PipelineLayout = VK_NULL_HANDLE;
-static VkDescriptorSet          g_DescriptorSet = VK_NULL_HANDLE;
 static VkPipeline               g_Pipeline = VK_NULL_HANDLE;
 static uint32_t                 g_Subpass = 0;
 static VkShaderModule           g_ShaderModuleVert;
@@ -291,8 +290,6 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
     // Bind pipeline and descriptor sets:
     {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        VkDescriptorSet desc_set[1] = { g_DescriptorSet };
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_PipelineLayout, 0, 1, desc_set, 0, NULL);
     }
 
     // Bind Vertex And Index Buffer:
@@ -447,6 +444,9 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
                     scissor.extent.height = (uint32_t)(clip_rect.w - clip_rect.y);
                     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
+                    // Bind descriptorset with font or user texture
+                    VkDescriptorSet desc_set[1] = { (VkDescriptorSet)pcmd->TextureId };
+                    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_PipelineLayout, 0, 1, desc_set, 0, NULL);
                     // Draw
                     vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, pcmd->IdxOffset + global_idx_offset, pcmd->VtxOffset + global_vtx_offset, 0);
                 }
@@ -513,21 +513,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture(VkCommandBuffer command_buffer)
         check_vk_result(err);
     }
 
-    // Update the Descriptor Set:
-    {
-        VkDescriptorImageInfo desc_image[1] = {};
-        desc_image[0].sampler = g_FontSampler;
-        desc_image[0].imageView = g_FontView;
-        desc_image[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet write_desc[1] = {};
-        write_desc[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write_desc[0].dstSet = g_DescriptorSet;
-        write_desc[0].descriptorCount = 1;
-        write_desc[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write_desc[0].pImageInfo = desc_image;
-        vkUpdateDescriptorSets(v->Device, 1, write_desc, 0, NULL);
-    }
-
+    VkDescriptorSet font_descriptor_set = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(g_FontSampler, g_FontView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     // Create the Upload Buffer:
     {
         VkBufferCreateInfo buffer_info = {};
@@ -604,7 +590,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture(VkCommandBuffer command_buffer)
     }
 
     // Store our identifier
-    io.Fonts->TexID = (ImTextureID)(intptr_t)g_FontImage;
+    io.Fonts->TexID = (ImTextureID)font_descriptor_set;
 
     return true;
 }
@@ -823,28 +809,16 @@ bool ImGui_ImplVulkan_CreateDeviceObjects()
 
     if (!g_DescriptorSetLayout)
     {
-        VkSampler sampler[1] = {g_FontSampler};
+        VkSampler sampler[1] = { g_FontSampler };
         VkDescriptorSetLayoutBinding binding[1] = {};
         binding[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         binding[0].descriptorCount = 1;
         binding[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        binding[0].pImmutableSamplers = sampler;
         VkDescriptorSetLayoutCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.bindingCount = 1;
         info.pBindings = binding;
         err = vkCreateDescriptorSetLayout(v->Device, &info, v->Allocator, &g_DescriptorSetLayout);
-        check_vk_result(err);
-    }
-
-    // Create Descriptor Set:
-    {
-        VkDescriptorSetAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        alloc_info.descriptorPool = v->DescriptorPool;
-        alloc_info.descriptorSetCount = 1;
-        alloc_info.pSetLayouts = &g_DescriptorSetLayout;
-        err = vkAllocateDescriptorSets(v->Device, &alloc_info, &g_DescriptorSet);
         check_vk_result(err);
     }
 
@@ -892,15 +866,15 @@ void    ImGui_ImplVulkan_DestroyDeviceObjects()
     ImGui_ImplVulkanH_DestroyAllViewportsRenderBuffers(v->Device, v->Allocator);
     ImGui_ImplVulkan_DestroyFontUploadObjects();
 
-    if (g_ShaderModuleVert)     { vkDestroyShaderModule(v->Device, g_ShaderModuleVert, v->Allocator); g_ShaderModuleVert = VK_NULL_HANDLE; }
-    if (g_ShaderModuleFrag)     { vkDestroyShaderModule(v->Device, g_ShaderModuleFrag, v->Allocator); g_ShaderModuleFrag = VK_NULL_HANDLE; }
-    if (g_FontView)             { vkDestroyImageView(v->Device, g_FontView, v->Allocator); g_FontView = VK_NULL_HANDLE; }
-    if (g_FontImage)            { vkDestroyImage(v->Device, g_FontImage, v->Allocator); g_FontImage = VK_NULL_HANDLE; }
-    if (g_FontMemory)           { vkFreeMemory(v->Device, g_FontMemory, v->Allocator); g_FontMemory = VK_NULL_HANDLE; }
-    if (g_FontSampler)          { vkDestroySampler(v->Device, g_FontSampler, v->Allocator); g_FontSampler = VK_NULL_HANDLE; }
-    if (g_DescriptorSetLayout)  { vkDestroyDescriptorSetLayout(v->Device, g_DescriptorSetLayout, v->Allocator); g_DescriptorSetLayout = VK_NULL_HANDLE; }
-    if (g_PipelineLayout)       { vkDestroyPipelineLayout(v->Device, g_PipelineLayout, v->Allocator); g_PipelineLayout = VK_NULL_HANDLE; }
-    if (g_Pipeline)             { vkDestroyPipeline(v->Device, g_Pipeline, v->Allocator); g_Pipeline = VK_NULL_HANDLE; }
+    if (g_ShaderModuleVert) { vkDestroyShaderModule(v->Device, g_ShaderModuleVert, v->Allocator); g_ShaderModuleVert = VK_NULL_HANDLE; }
+    if (g_ShaderModuleFrag) { vkDestroyShaderModule(v->Device, g_ShaderModuleFrag, v->Allocator); g_ShaderModuleFrag = VK_NULL_HANDLE; }
+    if (g_FontView) { vkDestroyImageView(v->Device, g_FontView, v->Allocator); g_FontView = VK_NULL_HANDLE; }
+    if (g_FontImage) { vkDestroyImage(v->Device, g_FontImage, v->Allocator); g_FontImage = VK_NULL_HANDLE; }
+    if (g_FontMemory) { vkFreeMemory(v->Device, g_FontMemory, v->Allocator); g_FontMemory = VK_NULL_HANDLE; }
+    if (g_FontSampler) { vkDestroySampler(v->Device, g_FontSampler, v->Allocator); g_FontSampler = VK_NULL_HANDLE; }
+    if (g_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(v->Device, g_DescriptorSetLayout, v->Allocator); g_DescriptorSetLayout = VK_NULL_HANDLE; }
+    if (g_PipelineLayout) { vkDestroyPipelineLayout(v->Device, g_PipelineLayout, v->Allocator); g_PipelineLayout = VK_NULL_HANDLE; }
+    if (g_Pipeline) { vkDestroyPipeline(v->Device, g_Pipeline, v->Allocator); g_Pipeline = VK_NULL_HANDLE; }
 }
 
 bool    ImGui_ImplVulkan_Init(ImGui_ImplVulkan_InitInfo* info, VkRenderPass render_pass)
